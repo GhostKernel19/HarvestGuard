@@ -1,8 +1,13 @@
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
+import tempfile
+import zipfile
+import shutil
+
+from scanner import CodebaseScanner, Finding, ScanSummary
 
 app = FastAPI(
     title="HarvestGuard API",
@@ -19,11 +24,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+scanner = CodebaseScanner()
+
 
 class ScanRequest(BaseModel):
     target_path: Optional[str] = None
     code_snippet: Optional[str] = None
-    ruleset: str = "default-pq-audit"
+    language: Optional[str] = "python"
 
 
 class InferenceRequest(BaseModel):
@@ -58,24 +65,108 @@ def health_check():
     }
 
 
+def _scan_zip_stream(file_bytes: bytes) -> Dict[str, Any]:
+    """Safely extracts and scans an uploaded zip archive in a temporary directory."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        zip_path = os.path.join(temp_dir, "archive.zip")
+        with open(zip_path, "wb") as f:
+            f.write(file_bytes)
+
+        if not zipfile.is_zipfile(zip_path):
+            raise HTTPException(status_code=400, detail="Uploaded file is not a valid zip archive")
+
+        extract_dir = os.path.join(temp_dir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            # Prevent zip slip path traversal
+            for member in zip_ref.namelist():
+                dest_path = os.path.abspath(os.path.join(extract_dir, member))
+                if not dest_path.startswith(os.path.abspath(extract_dir)):
+                    raise HTTPException(status_code=400, detail="Zip file contains unsafe path traversal")
+            zip_ref.extractall(extract_dir)
+
+        results = scanner.scan_directory(extract_dir)
+        results["target"] = "uploaded_zip_archive"
+        return results
+
+
 @app.post("/api/scan")
-def run_scan(request: ScanRequest):
+async def run_scan(request: Request):
     """
-    Static analysis scanning engine stub.
-    Evaluates source code against post-quantum readiness & security rules.
+    Static analysis scanning engine.
+    Scans a local repository directory, uploaded zip file, or raw code snippet for quantum-vulnerable cryptography.
+    Accepts application/json or multipart/form-data.
     """
-    return {
-        "status": "completed",
-        "target": request.target_path or "inline_snippet",
-        "ruleset": request.ruleset,
-        "findings": [
-            {
-                "rule_id": "PQ-001",
-                "severity": "INFO",
-                "message": "HarvestGuard static analysis engine initialized. Ready to inspect algorithms.",
+    content_type = request.headers.get("content-type", "")
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        uploaded_file = form.get("file")
+        target_path = form.get("target_path")
+
+        if uploaded_file and hasattr(uploaded_file, "file"):
+            content = await uploaded_file.read()
+            return _scan_zip_stream(content)
+        elif target_path:
+            target_str = str(target_path)
+            if not os.path.exists(target_str):
+                raise HTTPException(status_code=404, detail=f"Target path does not exist: {target_str}")
+            if os.path.isfile(target_str):
+                findings = scanner.scan_file(target_str)
+                summary = scanner.calculate_summary(findings)
+                return {
+                    "status": "completed",
+                    "target": target_str,
+                    "files_scanned": 1,
+                    "summary": summary.to_dict(),
+                    "findings": [f.to_dict() for f in findings],
+                }
+            results = scanner.scan_directory(target_str)
+            results["target"] = target_str
+            return results
+        else:
+            raise HTTPException(status_code=400, detail="Either 'file' (zip) or 'target_path' must be provided in form data")
+
+    # JSON Request
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body or missing Content-Type")
+
+    target_path = body.get("target_path")
+    code_snippet = body.get("code_snippet")
+    language = body.get("language", "python")
+
+    if code_snippet:
+        results = scanner.scan_code_snippet(code_snippet, language=language)
+        results["target"] = "inline_snippet"
+        return results
+    elif target_path:
+        if not os.path.exists(target_path):
+            raise HTTPException(status_code=404, detail=f"Target path does not exist: {target_path}")
+        if os.path.isfile(target_path):
+            findings = scanner.scan_file(target_path)
+            summary = scanner.calculate_summary(findings)
+            return {
+                "status": "completed",
+                "target": target_path,
+                "files_scanned": 1,
+                "summary": summary.to_dict(),
+                "findings": [f.to_dict() for f in findings],
             }
-        ],
-    }
+        results = scanner.scan_directory(target_path)
+        results["target"] = target_path
+        return results
+    else:
+        raise HTTPException(status_code=400, detail="Either 'target_path' or 'code_snippet' must be provided")
+
+
+@app.post("/api/scan/upload")
+async def run_scan_upload(file: UploadFile = File(...)):
+    """Dedicated endpoint for zip file uploads."""
+    content = await file.read()
+    return _scan_zip_stream(content)
 
 
 @app.post("/api/inference")
@@ -83,7 +174,6 @@ def run_inference(request: InferenceRequest):
     """
     Local model inference endpoint calling Qwen3-1.7B via ONNX Runtime with QNN EP.
     """
-    # Placeholder for QNN Execution Provider session logic
     return {
         "model": "Qwen3-1.7B",
         "provider": "QNNExecutionProvider",
