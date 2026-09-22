@@ -1,0 +1,6 @@
+fastapi>=0.115.0
+uvicorn>=0.32.0
+pydantic>=2.9.0
+httpx>=0.28.0
+# Hardware acceleration / ONNX Runtime with QNN EP (install platform-specific wheel)
+# onnxruntime-qnn
