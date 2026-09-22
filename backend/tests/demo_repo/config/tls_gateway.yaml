@@ -1,0 +1,17 @@
+# Production API Gateway TLS Configuration
+gateway:
+  listen_port: 8443
+  protocols:
+    - TLSv1.2
+    - TLSv1.3
+  ssl_certificate: /etc/ssl/certs/gateway_cert.pem
+  ssl_certificate_key: /etc/ssl/private/gateway_key.pem
+
+  # Classical RSA key transport and ECDHE key exchange suites
+  # Flagged: Quantum-vulnerable to retroactive traffic decryption (HNDL)
+  ciphers:
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    - TLS_RSA_WITH_AES_128_CBC_SHA256
+
+  session_timeout: 300
+  client_auth: optional
