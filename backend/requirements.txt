@@ -1,8 +1,10 @@
-fastapi>=0.115.0
-uvicorn>=0.32.0
-pydantic>=2.9.0
-httpx>=0.28.0
-python-multipart>=0.0.18
-pytest>=8.0.0
-onnxruntime>=1.20.0
+fastapi>=0.115.0,<1.0.0
+uvicorn[standard]>=0.32.0,<1.0.0
+pydantic>=2.9.0,<3.0.0
+httpx>=0.28.0,<1.0.0
+python-multipart>=0.0.18,<1.0.0
+onnxruntime>=1.20.0,<2.0.0
+cryptography>=43.0.0,<45.0.0
+pycryptodome>=3.20.0,<4.0.0
+pytest>=8.0.0,<10.0.0
 # Hardware acceleration with QNN EP: onnxruntime-qnn on Snapdragon hardware
