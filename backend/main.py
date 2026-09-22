@@ -8,6 +8,7 @@ import zipfile
 import shutil
 
 from scanner import CodebaseScanner, Finding, ScanSummary
+from inference import engine, FindingExplanation, InferenceBatchResponse
 
 app = FastAPI(
     title="HarvestGuard API",
@@ -33,12 +34,6 @@ class ScanRequest(BaseModel):
     language: Optional[str] = "python"
 
 
-class InferenceRequest(BaseModel):
-    prompt: str
-    max_tokens: int = 512
-    temperature: float = 0.7
-
-
 @app.get("/")
 def read_root():
     return {
@@ -51,17 +46,19 @@ def read_root():
 
 @app.get("/api/health")
 def health_check():
-    qnn_available = os.environ.get("QNN_AVAILABLE", "stub")
-    model_binary_path = os.environ.get("MODEL_PATH", "../models/qwen3_1.7b_qnn.bin")
-    model_present = os.path.isfile(model_binary_path)
+    provider_name = {
+        "qnn_npu": "QNNExecutionProvider",
+        "cpu_fallback": "CPUExecutionProvider",
+        "rule_based_stub": "RuleBasedStub",
+    }.get(engine.active_mode, "RuleBasedStub")
 
     return {
         "status": "healthy",
         "engine": "HarvestGuard Core",
         "model_architecture": "Qwen3-1.7B",
-        "execution_provider": "QNNExecutionProvider",
-        "model_binary_present": model_present,
-        "qnn_status": qnn_available,
+        "execution_provider": provider_name,
+        "inference_mode": engine.active_mode,
+        "model_binary_present": os.path.isfile(engine.model_path),
     }
 
 
@@ -170,17 +167,43 @@ async def run_scan_upload(file: UploadFile = File(...)):
 
 
 @app.post("/api/inference")
-def run_inference(request: InferenceRequest):
+async def run_inference(request: Request):
     """
-    Local model inference endpoint calling Qwen3-1.7B via ONNX Runtime with QNN EP.
+    Explains quantum vulnerabilities using Qwen3-1.7B (QNN/CPU) or rule-based fallback.
+    Accepts either a single finding object or a batch list of findings.
     """
-    return {
-        "model": "Qwen3-1.7B",
-        "provider": "QNNExecutionProvider",
-        "prompt": request.prompt,
-        "response": f"[HarvestGuard QNN Stub] Model response for: {request.prompt[:50]}...",
-        "tokens_generated": 16,
-    }
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    # Check if payload is a list (direct batch)
+    if isinstance(payload, list):
+        results = engine.explain_batch(payload)
+        return [r.model_dump() for r in results]
+
+    # Check if payload contains 'findings' list
+    if "findings" in payload and isinstance(payload["findings"], list):
+        results = engine.explain_batch(payload["findings"])
+        return {
+            "mode": engine.active_mode,
+            "count": len(results),
+            "results": [r.model_dump() for r in results],
+        }
+
+    # Single finding wrapped in 'finding' or directly passed as object
+    finding = payload.get("finding", payload)
+    if not isinstance(finding, dict) or ("vulnerability_type" not in finding and "prompt" not in finding):
+        if "prompt" in finding:
+            finding = {"vulnerability_type": "RSA", "description": finding["prompt"], "severity": "high"}
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid finding format. Must contain 'vulnerability_type'"
+            )
+
+    explanation = engine.explain_finding(finding)
+    return explanation.model_dump()
 
 
 if __name__ == "__main__":

@@ -4,5 +4,5 @@ pydantic>=2.9.0
 httpx>=0.28.0
 python-multipart>=0.0.18
 pytest>=8.0.0
-# Hardware acceleration / ONNX Runtime with QNN EP (install platform-specific wheel)
-# onnxruntime-qnn
+onnxruntime>=1.20.0
+# Hardware acceleration with QNN EP: onnxruntime-qnn on Snapdragon hardware
